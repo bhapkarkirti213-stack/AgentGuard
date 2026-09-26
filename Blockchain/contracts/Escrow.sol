@@ -2,7 +2,6 @@
 pragma solidity ^0.8.24;
 
 interface IAgentRegistry {
-
     function getAgent(
         string memory agentId
     )
@@ -18,28 +17,39 @@ interface IAgentRegistry {
 }
 
 interface IReputation {
-
     function recordSuccess(
         address agent,
         uint256 value
-    )
-        external;
+    ) external;
 
     function recordFailure(
         address agent,
         uint256 value
-    )
-        external;
+    ) external;
 
     function recordRefund(
         address agent
-    )
-        external;
+    ) external;
 
     function recordDispute(
         address agent
+    ) external;
+}
+
+interface IServiceVerifier {
+    function getVerification(
+        uint256 escrowId
     )
-        external;
+        external
+        view
+        returns (
+            uint256,
+            address,
+            bytes32,
+            bytes32,
+            uint8,
+            uint256
+        );
 }
 
 contract Escrow {
@@ -52,21 +62,13 @@ contract Escrow {
     }
 
     struct EscrowData {
-
         address buyer;
-
         address provider;
-
         string agentId;
-
         uint256 amount;
-
         bytes32 serviceHash;
-
         uint256 createdAt;
-
         uint256 deadline;
-
         Status status;
     }
 
@@ -76,18 +78,18 @@ contract Escrow {
 
     IReputation public reputation;
 
+    IServiceVerifier public serviceVerifier;
+
     uint256 private nextEscrowId = 1;
 
     uint256 private locked = 1;
 
-    mapping(
-        uint256 => EscrowData
-    ) private escrows;
+    mapping(uint256 => EscrowData) private escrows;
 
 
-    // --------------------------------------------------
+    // ---------------------------------------------------------
     // EVENTS
-    // --------------------------------------------------
+    // ---------------------------------------------------------
 
     event AgentRegistryUpdated(
         address indexed registry
@@ -95,6 +97,10 @@ contract Escrow {
 
     event ReputationContractUpdated(
         address indexed reputation
+    );
+
+    event ServiceVerifierUpdated(
+        address indexed verifier
     );
 
     event EscrowCreated(
@@ -120,34 +126,27 @@ contract Escrow {
     );
 
 
-    // --------------------------------------------------
+    // ---------------------------------------------------------
     // MODIFIERS
-    // --------------------------------------------------
+    // ---------------------------------------------------------
 
     modifier onlyOwner() {
-
         require(
             msg.sender == owner,
             "Only owner"
         );
-
         _;
     }
-
 
     modifier onlyBuyer(
         uint256 escrowId
     ) {
-
         require(
-            msg.sender ==
-            escrows[escrowId].buyer,
+            msg.sender == escrows[escrowId].buyer,
             "Only buyer"
         );
-
         _;
     }
-
 
     modifier nonReentrant() {
 
@@ -164,19 +163,18 @@ contract Escrow {
     }
 
 
-    // --------------------------------------------------
+    // ---------------------------------------------------------
     // CONSTRUCTOR
-    // --------------------------------------------------
+    // ---------------------------------------------------------
 
     constructor() {
-
         owner = msg.sender;
     }
 
 
-    // --------------------------------------------------
-    // SET AGENT REGISTRY
-    // --------------------------------------------------
+    // ---------------------------------------------------------
+    // CONFIGURATION
+    // ---------------------------------------------------------
 
     function setAgentRegistry(
         address registryAddress
@@ -184,7 +182,6 @@ contract Escrow {
         external
         onlyOwner
     {
-
         require(
             registryAddress != address(0),
             "Invalid registry"
@@ -201,17 +198,12 @@ contract Escrow {
     }
 
 
-    // --------------------------------------------------
-    // SET REPUTATION CONTRACT
-    // --------------------------------------------------
-
     function setReputationContract(
         address reputationAddress
     )
         external
         onlyOwner
     {
-
         require(
             reputationAddress != address(0),
             "Invalid reputation"
@@ -228,9 +220,31 @@ contract Escrow {
     }
 
 
-    // --------------------------------------------------
+    function setServiceVerifier(
+        address verifierAddress
+    )
+        external
+        onlyOwner
+    {
+        require(
+            verifierAddress != address(0),
+            "Invalid verifier"
+        );
+
+        serviceVerifier =
+            IServiceVerifier(
+                verifierAddress
+            );
+
+        emit ServiceVerifierUpdated(
+            verifierAddress
+        );
+    }
+
+
+    // ---------------------------------------------------------
     // CREATE ESCROW
-    // --------------------------------------------------
+    // ---------------------------------------------------------
 
     function createEscrow(
         string memory agentId,
@@ -240,41 +254,32 @@ contract Escrow {
     )
         external
         payable
-        returns (
-            uint256 escrowId
-        )
+        returns (uint256 escrowId)
     {
-
         require(
-            address(agentRegistry) !=
-            address(0),
+            address(agentRegistry) != address(0),
             "Registry not configured"
         );
-
 
         require(
             provider != address(0),
             "Invalid provider"
         );
 
-
         require(
             provider != msg.sender,
             "Buyer cannot be provider"
         );
-
 
         require(
             msg.value > 0,
             "Amount must be greater than zero"
         );
 
-
         require(
             deadline > block.timestamp,
             "Invalid deadline"
         );
-
 
         (
             ,
@@ -282,83 +287,55 @@ contract Escrow {
             ,
             bool active,
             
-        ) =
-            agentRegistry.getAgent(
-                agentId
-            );
-
+        ) = agentRegistry.getAgent(
+            agentId
+        );
 
         require(
             registeredWallet != address(0),
             "Agent not registered"
         );
 
-
         require(
             registeredWallet == provider,
             "Provider mismatch"
         );
-
 
         require(
             active,
             "Agent inactive"
         );
 
-
-        escrowId = nextEscrowId++;
-
+        escrowId =
+            nextEscrowId++;
 
         escrows[escrowId] =
             EscrowData({
-
                 buyer: msg.sender,
-
                 provider: provider,
-
                 agentId: agentId,
-
                 amount: msg.value,
-
                 serviceHash: serviceHash,
-
                 createdAt: block.timestamp,
-
                 deadline: deadline,
-
                 status: Status.Funded
             });
 
-
         emit EscrowCreated(
-
             escrowId,
-
             msg.sender,
-
             provider,
-
             agentId,
-
             msg.value,
-
             serviceHash,
-
             deadline
         );
     }
 
 
-    // --------------------------------------------------
-    // RELEASE ESCROW
-    // --------------------------------------------------
-    //
-    // IMPORTANT:
-    // nonReentrant is intentionally BEFORE onlyBuyer.
-    //
-    // This means a callback/reentrant call is stopped
-    // immediately by the reentrancy guard.
-    // --------------------------------------------------
+    // ---------------------------------------------------------
+    // ORIGINAL RELEASE
+    // ---------------------------------------------------------
 
     function releaseEscrow(
         uint256 escrowId
@@ -367,72 +344,53 @@ contract Escrow {
         nonReentrant
         onlyBuyer(escrowId)
     {
-
         EscrowData storage escrow =
             escrows[escrowId];
 
-
         require(
-            escrow.status ==
-            Status.Funded,
+            escrow.status == Status.Funded,
             "Escrow not funded"
         );
-
 
         escrow.status =
             Status.Released;
 
-
         uint256 amount =
             escrow.amount;
 
-
         address provider =
             escrow.provider;
-
 
         (bool success, ) =
             payable(provider).call{
                 value: amount
             }("");
 
-
         require(
             success,
             "Payment failed"
         );
 
-
-        // Update reputation after successful payment
         if (
-            address(reputation) !=
-            address(0)
+            address(reputation) != address(0)
         ) {
-
             reputation.recordSuccess(
                 provider,
                 amount
             );
         }
 
-
         emit EscrowReleased(
-
             escrowId,
-
             provider,
-
             amount
         );
     }
 
 
-    // --------------------------------------------------
-    // REFUND ESCROW
-    // --------------------------------------------------
-    //
-    // nonReentrant is also placed before onlyBuyer.
-    // --------------------------------------------------
+    // ---------------------------------------------------------
+    // ORIGINAL REFUND
+    // ---------------------------------------------------------
 
     function refundEscrow(
         uint256 escrowId
@@ -441,115 +399,273 @@ contract Escrow {
         nonReentrant
         onlyBuyer(escrowId)
     {
-
         EscrowData storage escrow =
             escrows[escrowId];
 
-
         require(
-            escrow.status ==
-            Status.Funded,
+            escrow.status == Status.Funded,
             "Escrow not funded"
         );
 
-
         require(
-            block.timestamp >=
-            escrow.deadline,
+            block.timestamp >= escrow.deadline,
             "Deadline not reached"
         );
-
 
         escrow.status =
             Status.Refunded;
 
-
         uint256 amount =
             escrow.amount;
 
-
         address buyer =
             escrow.buyer;
-
 
         (bool success, ) =
             payable(buyer).call{
                 value: amount
             }("");
 
-
         require(
             success,
             "Refund failed"
         );
 
-
-        // Update reputation after refund
         if (
-            address(reputation) !=
-            address(0)
+            address(reputation) != address(0)
         ) {
-
             reputation.recordFailure(
                 escrow.provider,
                 amount
             );
-
 
             reputation.recordRefund(
                 escrow.provider
             );
         }
 
-
         emit EscrowRefunded(
-
             escrowId,
-
             buyer,
-
             amount
         );
     }
 
 
-    // --------------------------------------------------
-    // GET ESCROW
-    // --------------------------------------------------
+    // ---------------------------------------------------------
+    // VERIFIED RELEASE
+    // ---------------------------------------------------------
+
+    function releaseVerifiedEscrow(
+        uint256 escrowId
+    )
+        external
+        nonReentrant
+        onlyBuyer(escrowId)
+    {
+        require(
+            address(serviceVerifier) != address(0),
+            "Verifier not configured"
+        );
+
+        EscrowData storage escrow =
+            escrows[escrowId];
+
+        require(
+            escrow.status == Status.Funded,
+            "Escrow not funded"
+        );
+
+        (
+            ,
+            address verifiedProvider,
+            bytes32 requestHash,
+            ,
+            uint8 verificationStatus,
+            
+        ) =
+            serviceVerifier.getVerification(
+                escrowId
+            );
+
+        // Provider must match
+        require(
+            verifiedProvider == escrow.provider,
+            "Provider mismatch"
+        );
+
+        // Security binding:
+        // The request verified by ServiceVerifier
+        // must be the same request committed in Escrow.
+        require(
+            requestHash == escrow.serviceHash,
+            "Request hash mismatch"
+        );
+
+        // 1 = Valid
+        require(
+            verificationStatus == 1,
+            "Service not verified"
+        );
+
+        escrow.status =
+            Status.Released;
+
+        uint256 amount =
+            escrow.amount;
+
+        address provider =
+            escrow.provider;
+
+        (bool success, ) =
+            payable(provider).call{
+                value: amount
+            }("");
+
+        require(
+            success,
+            "Payment failed"
+        );
+
+        if (
+            address(reputation) != address(0)
+        ) {
+            reputation.recordSuccess(
+                provider,
+                amount
+            );
+        }
+
+        emit EscrowReleased(
+            escrowId,
+            provider,
+            amount
+        );
+    }
+
+
+    // ---------------------------------------------------------
+    // VERIFIED REFUND
+    // ---------------------------------------------------------
+
+    function refundVerifiedEscrow(
+        uint256 escrowId
+    )
+        external
+        nonReentrant
+        onlyBuyer(escrowId)
+    {
+        require(
+            address(serviceVerifier) != address(0),
+            "Verifier not configured"
+        );
+
+        EscrowData storage escrow =
+            escrows[escrowId];
+
+        require(
+            escrow.status == Status.Funded,
+            "Escrow not funded"
+        );
+
+        (
+            ,
+            address verifiedProvider,
+            bytes32 requestHash,
+            ,
+            uint8 verificationStatus,
+            
+        ) =
+            serviceVerifier.getVerification(
+                escrowId
+            );
+
+        // Provider must match
+        require(
+            verifiedProvider == escrow.provider,
+            "Provider mismatch"
+        );
+
+        // Security binding:
+        // The request verified by ServiceVerifier
+        // must be the same request committed in Escrow.
+        require(
+            requestHash == escrow.serviceHash,
+            "Request hash mismatch"
+        );
+
+        // 2 = Invalid
+        require(
+            verificationStatus == 2,
+            "Service not invalid"
+        );
+
+        escrow.status =
+            Status.Refunded;
+
+        uint256 amount =
+            escrow.amount;
+
+        address buyer =
+            escrow.buyer;
+
+        (bool success, ) =
+            payable(buyer).call{
+                value: amount
+            }("");
+
+        require(
+            success,
+            "Refund failed"
+        );
+
+        if (
+            address(reputation) != address(0)
+        ) {
+            reputation.recordFailure(
+                escrow.provider,
+                amount
+            );
+
+            reputation.recordRefund(
+                escrow.provider
+            );
+        }
+
+        emit EscrowRefunded(
+            escrowId,
+            buyer,
+            amount
+        );
+    }
+
+
+    // ---------------------------------------------------------
+    // VIEW FUNCTIONS
+    // ---------------------------------------------------------
 
     function getEscrow(
         uint256 escrowId
     )
         external
         view
-        returns (
-            EscrowData memory
-        )
+        returns (EscrowData memory)
     {
-
         require(
             escrowId > 0 &&
             escrowId < nextEscrowId,
             "Escrow does not exist"
         );
 
-
         return escrows[escrowId];
     }
 
 
-    // --------------------------------------------------
-    // GET ESCROW COUNT
-    // --------------------------------------------------
-
     function getEscrowCount()
         external
         view
-        returns (
-            uint256
-        )
+        returns (uint256)
     {
-
         return nextEscrowId - 1;
     }
 }
