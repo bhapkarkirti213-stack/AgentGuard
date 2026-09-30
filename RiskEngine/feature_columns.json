@@ -1,0 +1,13 @@
+[
+    "transaction_amount",
+    "reputation_score",
+    "successful_transactions",
+    "failed_transactions",
+    "refunded_transactions",
+    "disputes",
+    "agent_age_days",
+    "amount_vs_history",
+    "new_agent",
+    "is_registered",
+    "is_active"
+]
